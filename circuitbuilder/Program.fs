@@ -6,36 +6,31 @@ module Map =
   let singleton k v = Map.empty |> Map.add k v
 
 type Qubit = int ref
-type CArg =
+type Args =
   | CVal of bool
-  | CObj of Map<string, CArg>
+  | QVal of Qubit
+  | CObj of Map<string, Args>
   with  
     member this.get path =
-      match this with
-        | CObj m ->
-            if String.IsNullOrEmpty path then this
-            else
-              let split = path.Split(".")
-              m.[split.[0]].get (String.Join('.', Array.tail split))
-        | _ -> failwith "Not an object"
-    member this.b path =
-      if String.IsNullOrEmpty path then
-        match this with
-          | CVal b -> b
-          | _ -> failwith "Not a leaf"
+      if String.IsNullOrEmpty path then this
       else
         match this with
           | CObj m ->
               let split = path.Split(".")
-              m.[split.[0]].b (String.Join('.', Array.tail split))
+              m.[split.[0]].get (String.Join('.', Array.tail split))
           | _ -> failwith "Not an object"
+    member this.b path =
+      match this.get path with
+        | CVal b -> b
+        | _ -> failwith "Not a cval"
+    member this.q path =
+      match this.get path with
+        | QVal q -> q
+        | _ -> failwith "Not a qval"
         
 
   
-type TArgs<'T, 'U> = Map<string, 'T> * Map<string, 'U>
-type Args = TArgs<Qubit, CArg>
-type NameMap = (string * string) list
-type ArgsMap = NameMap * NameMap
+type ArgsMap = (string * string) list
 
 type Circuit = Operation list
 and Operation =
@@ -48,22 +43,20 @@ and Operation =
 
 let rec run args circuit =
   circuit |> List.fold runOp args
-and runOp ((qvars, cvars) as args:Args) operation =
+and runOp args operation =
   match operation with
   | Measure (q, name) ->
-      let q = Map.find q qvars
-      let cvars = Map.add name (CVal (!q % 2 = 0)) cvars
-      qvars, cvars
+      let q = (CObj args).q q
+      Map.add name (CVal (!q % 2 = 0)) args
   | Gate q ->
-      incr ^% Map.find q qvars
+      incr ^% (CObj args).q q
       args
   | GateIf (q, cvar) ->
-      if (CObj cvars).b cvar then runOp args (Gate q) else args
-  | Subcircuit ((qmap, cmap), circuit, name) ->
-      let qargs = qmap |> List.map (fun (k, v) -> k, qvars.[v]) |> Map.ofList
-      let cargs = cmap |> List.map (fun (k, v) -> k, (CObj cvars).get v) |> Map.ofList
-      let _, c = run (qargs, cargs) circuit
-      qvars, Map.add name (CObj c) cvars
+      if (CObj args).b cvar then runOp args (Gate q) else args
+  | Subcircuit (argmap, circuit, name) ->
+      let qcargs = argmap |> List.map (fun (k, v) -> k, (CObj args).get v) |> Map.ofList
+      let resp = run qcargs circuit
+      Map.add name (CObj resp) args
 
 let subsubcircuit =
   [
@@ -82,24 +75,24 @@ let doit =
 
 let subcircuit =
   [
-    Subcircuit ((["q", "q"],  []), subsubcircuit, "a")
-    Subcircuit ((["q", "q"],  []), subsubcircuit, "b")
-    Subcircuit ((["q", "q"],  []), subsubcircuit, "c")
-    Subcircuit ((["q", "q"],  ["c", "b"]), doit, "x")
+    Subcircuit ((["q", "q"]), subsubcircuit, "a")
+    Subcircuit ((["q", "q"]), subsubcircuit, "b")
+    Subcircuit ((["q", "q"]), subsubcircuit, "c")
+    Subcircuit ((["q", "q"; "c", "b"]), doit, "x")
   ]
 
 let circuit =
   [
-    Subcircuit ((["q", "q"], []), subcircuit, "a")
-    Subcircuit ((["q", "q"], []), subcircuit, "b")
-    Subcircuit ((["q", "q"], []), subcircuit, "c")
-    Subcircuit ((["q", "q"], ["c", "b.b"]), doit, "x")
+    Subcircuit ((["q", "q"]), subcircuit, "a")
+    Subcircuit ((["q", "q"]), subcircuit, "b")
+    Subcircuit ((["q", "q"]), subcircuit, "c")
+    Subcircuit ((["q", "q"; "c", "b.b"]), doit, "x")
   ]
 
 
 [<EntryPoint>]
 let main argv =
   let q = ref 0
-  let x = run ((Map.singleton "q" q), Map.empty) circuit
-  printfn "%A" circuit
+  let x = run (Map.singleton "q" (QVal q)) circuit
+  printfn "%A" x
   0 // return an integer exit code
