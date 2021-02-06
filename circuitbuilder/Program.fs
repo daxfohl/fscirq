@@ -32,12 +32,11 @@ type Args =
   
 type ArgsMap = (string * string) list
 
-type Circuit = Operation list
-and Operation =
-  | Subcircuit of args:ArgsMap * circuit:Circuit * name:string
+type Operation =
+  | Subcircuit of name:string * circuit:Operation list * args:ArgsMap
   | Gate of qubit:string
   | GateIf of qubit:string * path:string
-  | Measure of qubit:string * name:string
+  | Measure of name:string * qubit:string
 
 
 
@@ -45,7 +44,7 @@ let rec run args circuit =
   circuit |> List.fold runOp args
 and runOp args operation =
   match operation with
-  | Measure (q, name) ->
+  | Measure (name, q) ->
       let q = (CObj args).q q
       Map.add name (CVal (!q % 2 = 0)) args
   | Gate q ->
@@ -53,7 +52,7 @@ and runOp args operation =
       args
   | GateIf (q, cvar) ->
       if (CObj args).b cvar then runOp args (Gate q) else args
-  | Subcircuit (argmap, circuit, name) ->
+  | Subcircuit (name, circuit, argmap) ->
       let qcargs = argmap |> List.map (fun (k, v) -> k, (CObj args).get v) |> Map.ofList
       let resp = run qcargs circuit
       Map.add name (CObj resp) args
@@ -61,11 +60,11 @@ and runOp args operation =
 let subsubcircuit =
   [
     Gate "q"
-    Measure ("q", "m1")
+    Measure ("m1", "q")
     Gate "q"
-    Measure ("q", "m2")
+    Measure ("m2", "q")
     Gate "q"
-    Measure ("q", "m3")
+    Measure ("m3", "q")
   ]
 
 let doit =
@@ -75,18 +74,18 @@ let doit =
 
 let subcircuit =
   [
-    Subcircuit ((["q", "q"]), subsubcircuit, "a")
-    Subcircuit ((["q", "q"]), subsubcircuit, "b")
-    Subcircuit ((["q", "q"]), subsubcircuit, "c")
-    Subcircuit ((["q", "q"; "c", "b"]), doit, "x")
+    Subcircuit ("a", subsubcircuit, ["q", "q"])
+    Subcircuit ("b", subsubcircuit, ["q", "q"])
+    Subcircuit ("c", subsubcircuit, ["q", "q"])
+    Subcircuit ("x", doit, ["q", "q"; "c", "b"])
   ]
 
 let circuit =
   [
-    Subcircuit ((["q", "q"]), subcircuit, "a")
-    Subcircuit ((["q", "q"]), subcircuit, "b")
-    Subcircuit ((["q", "q"]), subcircuit, "c")
-    Subcircuit ((["q", "q"; "c", "b.b"]), doit, "x")
+    Subcircuit ("a", subcircuit, ["q", "q"])
+    Subcircuit ("b", subcircuit, ["q", "q"])
+    Subcircuit ("c", subcircuit, ["q", "q"])
+    Subcircuit ("x", doit, ["q", "q"; "c", "c.b"])
   ]
 
 
