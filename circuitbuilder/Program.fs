@@ -40,10 +40,7 @@ type Operation =
 
 
 
-let rec run args circuit =
-  circuit |> List.fold runOp args
-and runOp args operation =
-  match operation with
+let rec runOp args = function
   | Measure (name, q) ->
       let q = (CObj args).q q
       Map.add name (CVal (!q % 2 = 0)) args
@@ -54,8 +51,10 @@ and runOp args operation =
       if (CObj args).b cvar then runOp args (Gate q) else args
   | Subcircuit (name, circuit, argmap) ->
       let qcargs = argmap |> List.map (fun (k, v) -> k, (CObj args).get v) |> Map.ofList
-      let resp = run qcargs circuit
+      let resp = List.fold runOp qcargs circuit
       Map.add name (CObj resp) args
+
+let run = List.fold runOp
 
 let subsubcircuit =
   [
