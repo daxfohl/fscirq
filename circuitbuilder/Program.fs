@@ -1,4 +1,6 @@
 ﻿open System
+open DynamicInvoke
+
 let inline (^%) f = f
 
 module Map =
@@ -27,70 +29,109 @@ type Args =
       match this.get path with
         | QVal q -> q
         | _ -> failwith "Not a qval"
-        
 
-  
-type ArgsMap = (string * string) list
+type InputQubit =
+  | QQubit of Qubit
+  | QArgs of Args * string
+  | QLocal of string
+  with
+    member this.get (localArgs:Args) =
+      match this with
+        | QQubit q -> q
+        | QArgs (args, path) -> args.q path
+        | QLocal path -> localArgs.q path
+
+type InputBool =
+  | BBool of bool
+  | BArgs of Args * string
+  | BLocal of string
+  with
+    member this.get (localArgs:Args) =
+      match this with
+        | BBool b -> b
+        | BArgs (args, path) -> args.b path
+        | BLocal path -> localArgs.b path
+
+type InputArgs =
+  | AArgs of Args * string
+  | ALocal of string
+  with
+    member this.get (localArgs:Args) =
+      match this with
+        | AArgs (args, path) -> args.get path
+        | ALocal path -> localArgs.get path
+        
+type Input =
+  | IQubit of InputQubit
+  | IBool of InputBool
+  | IArgs of InputArgs
+  with
+    member this.get args =
+      match this with
+        | IQubit q -> box ^% q.get args
+        | IBool b -> box ^% b.get args
+        | IArgs a -> box ^% a.get args
 
 type Operation =
-  | Subcircuit of name:string * circuit:Operation list * args:ArgsMap
-  | Gate of qubit:string
-  | GateIf of qubit:string * path:string
-  | Measure of name:string * qubit:string
-
+  | Subcircuit of name:string * circuit:obj * inputs:Input list
+  | Gate of qubit:InputQubit
+  | GateIf of qubit:InputQubit * b:InputBool
+  | Measure of name:string * qubit:InputQubit
 
 
 let rec runOp args = function
   | Measure (name, q) ->
-      let q = (CObj args).q q
+      let q = q.get (CObj args)
       Map.add name (CVal (!q % 2 = 0)) args
   | Gate q ->
-      incr ^% (CObj args).q q
+      let q = q.get (CObj args)
+      incr q
       args
-  | GateIf (q, cvar) ->
-      if (CObj args).b cvar then runOp args (Gate q) else args
-  | Subcircuit (name, circuit, argmap) ->
-      let qcargs = argmap |> List.map (fun (k, v) -> k, (CObj args).get v) |> Map.ofList
-      let resp = List.fold runOp qcargs circuit
+  | GateIf (q, b) ->
+      let b = b.get (CObj args)
+      if b then runOp args (Gate q) else args
+  | Subcircuit (name, circuitFactory, inputs) ->
+      let oinputs = inputs |> List.map (fun i -> i.get (CObj args))
+      let circuit = dynamicFunction circuitFactory oinputs :?> Operation list
+      let resp = List.fold runOp Map.empty circuit
       Map.add name (CObj resp) args
 
 let run = List.fold runOp
-
-let subsubcircuit =
+let subsubcircuit q =
   [
-    Gate "q"
-    Measure ("m1", "q")
-    Gate "q"
-    Measure ("m2", "q")
-    Gate "q"
-    Measure ("m3", "q")
+    Gate (QQubit q)
+    Measure ("m1", QQubit q)
+    Gate (QQubit q)
+    Measure ("m2", QQubit q)
+    Gate (QQubit q)
+    Measure ("m3", QQubit q)
   ]
 
-let doit =
+let doit q c =
   [
-    GateIf ("q", "c.m1")
+    GateIf (QQubit q, BArgs(c, "b.m1"))
   ]
 
-let subcircuit =
+let subcircuit q =
   [
-    Subcircuit ("a", subsubcircuit, ["q", "q"])
-    Subcircuit ("b", subsubcircuit, ["q", "q"])
-    Subcircuit ("c", subsubcircuit, ["q", "q"])
-    Subcircuit ("x", doit, ["q", "q"; "c", "b"])
+    Subcircuit ("a", subsubcircuit, [IQubit (QQubit q)])
+    Subcircuit ("b", subsubcircuit, [IQubit (QQubit q)])
+    Subcircuit ("c", subsubcircuit, [IQubit (QQubit q)])
+    Subcircuit ("x", doit, [IQubit (QQubit q); IArgs (ALocal "b")])
   ]
 
-let circuit =
+let circuit q =
   [
-    Subcircuit ("a", subcircuit, ["q", "q"])
-    Subcircuit ("b", subcircuit, ["q", "q"])
-    Subcircuit ("c", subcircuit, ["q", "q"])
-    Subcircuit ("x", doit, ["q", "q"; "c", "c.b"])
+    Subcircuit ("a", subcircuit, [IQubit (QQubit q)])
+    Subcircuit ("b", subcircuit, [IQubit (QQubit q)])
+    Subcircuit ("c", subcircuit, [IQubit (QQubit q)])
+    Subcircuit ("x", doit, [IQubit (QQubit q); IArgs (ALocal "c.b")])
   ]
 
 
 [<EntryPoint>]
 let main argv =
   let q = ref 0
-  let x = run (Map.singleton "q" (QVal q)) circuit
+  let x = run Map.empty (circuit q)
   printfn "%A" x
   0 // return an integer exit code
