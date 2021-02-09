@@ -33,49 +33,50 @@ type Args =
 
 type InputArgs =
   | AArgs of Args
-  | AArgs1 of InputArgs * string
   | ALocal of string
   | AGlobal of string
   with
     member this.get (localArgs:Args) =
       match this with
         | AArgs args -> args
-        | AArgs1 (args, path) -> (args.get localArgs).get path
         | ALocal path -> localArgs.get path
         | AGlobal path -> localArgs.get path
-
+    member this.sub path =
+      match this with
+        | AArgs args -> AArgs ^% args.get path
+        | ALocal root -> ALocal ^% getpath root path
+        | AGlobal root -> AGlobal ^% getpath root path
 type InputQubit =
   | QQubit of Qubit
-  | QArgs of InputArgs * string
   | QLocal of string
   | QGlobal of string
   with
     member this.get (localArgs:Args) =
       match this with
         | QQubit q -> q
-        | QArgs (args, path) -> (args.get localArgs).q path
         | QLocal path -> localArgs.q path
         | QGlobal path -> localArgs.q path
+    static member fromArgs(inputArgs, path) =
+      match inputArgs with
+        | AArgs args -> QQubit (args.q path)
+        | ALocal root -> QLocal ^% getpath root path
+        | AGlobal root -> QGlobal ^% getpath root path
 
 type InputBool =
   | BBool of bool
-  | BArgs of InputArgs * string
   | BLocal of string
   | BGlobal of string
   with
     member this.get (localArgs:Args) =
       match this with
         | BBool b -> b
-        | BArgs (args, path) -> (args.get localArgs).b path
         | BLocal path -> localArgs.b path
         | BGlobal path -> localArgs.b path
-
-let bArgs(inputArgs, path) =
-  match inputArgs with
-    | AArgs args -> BBool (args.b path)
-    | AArgs1 (args, path) -> BArgs(inputArgs, path)
-    | ALocal root -> BLocal ^% getpath root path
-    | AGlobal root -> BGlobal ^% getpath root path
+    static member fromArgs(inputArgs, path) =
+      match inputArgs with
+        | AArgs args -> BBool (args.b path)
+        | ALocal root -> BLocal ^% getpath root path
+        | AGlobal root -> BGlobal ^% getpath root path
     
 type Input =
   | IQubit of InputQubit
@@ -127,7 +128,7 @@ let subsubcircuit q =
 
 let doit (q:InputQubit) (c:InputArgs) =
   [
-    GateIf (q, bArgs(c, "m1"))
+    GateIf (q, InputBool.fromArgs(c, "m1"))
   ]
 
 // Need InputBool here because if we had just booleans
@@ -197,7 +198,7 @@ let x (q:InputQubit) =
 
 
 let rec flattenOp path op =
-  let getpath name = if String.IsNullOrEmpty path then name else path + "." + name
+  let getpath = getpath path
   match op with
     | Measure (name, q) ->
         [Measure (getpath name, q)]
