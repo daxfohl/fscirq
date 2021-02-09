@@ -30,36 +30,44 @@ type Args =
         | QVal q -> q
         | _ -> failwith "Not a qval"
 
+type InputArgs =
+  | AArgs of Args
+  | AArgs1 of InputArgs * string
+  | ALocal of string
+  | AGlobal of string
+  with
+    member this.get (localArgs:Args) =
+      match this with
+        | AArgs args -> args
+        | AArgs1 (args, path) -> (args.get localArgs).get path
+        | ALocal path -> localArgs.get path
+        | AGlobal path -> localArgs.get path
+
 type InputQubit =
   | QQubit of Qubit
-  | QArgs of Args * string
+  | QArgs of InputArgs * string
   | QLocal of string
+  | QGlobal of string
   with
     member this.get (localArgs:Args) =
       match this with
         | QQubit q -> q
-        | QArgs (args, path) -> args.q path
+        | QArgs (args, path) -> (args.get localArgs).q path
         | QLocal path -> localArgs.q path
+        | QGlobal path -> localArgs.q path
 
 type InputBool =
   | BBool of bool
-  | BArgs of Args * string
+  | BArgs of InputArgs * string
   | BLocal of string
+  | BGlobal of string
   with
     member this.get (localArgs:Args) =
       match this with
         | BBool b -> b
-        | BArgs (args, path) -> args.b path
+        | BArgs (args, path) -> (args.get localArgs).b path
         | BLocal path -> localArgs.b path
-
-type InputArgs =
-  | AArgs of Args * string
-  | ALocal of string
-  with
-    member this.get (localArgs:Args) =
-      match this with
-        | AArgs (args, path) -> args.get path
-        | ALocal path -> localArgs.get path
+        | BGlobal path -> localArgs.b path
         
 type Input =
   | IQubit of InputQubit
@@ -68,9 +76,9 @@ type Input =
   with
     member this.get args =
       match this with
-        | IQubit q -> box ^% q.get args
-        | IBool b -> box ^% b.get args
-        | IArgs a -> box ^% a.get args
+        | IQubit q -> box ^% QQubit ^% q.get args
+        | IBool b -> box ^% BBool ^% b.get args
+        | IArgs a -> box ^% AArgs ^% a.get args
 
 type Operation =
   | Subcircuit of name:string * circuit:obj * inputs:Input list
@@ -99,39 +107,127 @@ let rec runOp args = function
 let run = List.fold runOp
 let subsubcircuit q =
   [
-    Gate (QQubit q)
-    Measure ("m1", QQubit q)
-    Gate (QQubit q)
-    Measure ("m2", QQubit q)
-    Gate (QQubit q)
-    Measure ("m3", QQubit q)
+    Gate q
+    Measure ("m1", q)
+    Gate q
+    Measure ("m2", q)
+    Gate q
+    Measure ("m3", q)
   ]
 
-let doit q c =
+let doit (q:InputQubit) (c:InputArgs) =
   [
-    GateIf (QQubit q, BArgs(c, "b.m1"))
+    GateIf (q, BArgs(c, "m1"))
   ]
 
-let subcircuit q =
+// Need InputBool here because if we had just booleans
+//   [GateIf q b1; GateIf q b2]
+//   and they were both called as BLocal from parent circuit
+//   then when flattening
+//   it would just return [GateIf q false; GateIf q false]
+//   (or whatever default value we give it)
+//   and there'd be no way to distinguish those values.
+// But this probably isn't right either. As-is, the argument
+//   can be a LocalBool. That doesn't make sense because when
+//   the unroller sees that it can't distinguish between
+//   whether that's an actual local bool definition, or 
+//   something passed in from the parent function. So it
+//   treats it as new local and adds stack to it.
+//   Need something "fixed" here.
+let doit2 (q:InputQubit) (b:InputBool) =
   [
-    Subcircuit ("a", subsubcircuit, [IQubit (QQubit q)])
-    Subcircuit ("b", subsubcircuit, [IQubit (QQubit q)])
-    Subcircuit ("c", subsubcircuit, [IQubit (QQubit q)])
-    Subcircuit ("x", doit, [IQubit (QQubit q); IArgs (ALocal "b")])
+    GateIf (q, b)
   ]
 
-let circuit q =
+let doit3 (q:InputQubit) (b:InputBool) =
   [
-    Subcircuit ("a", subcircuit, [IQubit (QQubit q)])
-    Subcircuit ("b", subcircuit, [IQubit (QQubit q)])
-    Subcircuit ("c", subcircuit, [IQubit (QQubit q)])
-    Subcircuit ("x", doit, [IQubit (QQubit q); IArgs (ALocal "c.b")])
+    Subcircuit ("z3", doit2, [IQubit q; IBool b])
   ]
 
+let doit4 (q:InputQubit) (b:InputBool) =
+  [
+    Subcircuit ("z4", doit3, [IQubit q; IBool b])
+  ]
+
+let subcircuit (q:InputQubit) =
+  [
+    Subcircuit ("a", subsubcircuit, [IQubit q])
+    Subcircuit ("b", subsubcircuit, [IQubit q])
+    Subcircuit ("c", subsubcircuit, [IQubit q])
+    Subcircuit ("x", doit, [IQubit q; IArgs (ALocal "b")])
+  ]
+
+let circuit (q:InputQubit) =
+  [
+    Subcircuit ("a", subcircuit, [IQubit q])
+    Subcircuit ("b", subcircuit, [IQubit q])
+    Subcircuit ("c", subcircuit, [IQubit q])
+    Subcircuit ("x", doit, [IQubit q; IArgs (ALocal "c.b")])
+  ]
+  
+let zzz (q:InputQubit) =
+  [
+    Subcircuit ("a", subsubcircuit q, [])
+    Subcircuit ("x", doit, [IQubit q; IArgs (ALocal "a")])
+    Subcircuit ("x1", doit2, [IQubit q; IBool (BBool false)])
+    Subcircuit ("x2", doit2, [IQubit q; IBool (BLocal "a.m1")])
+    Subcircuit ("x3", doit4, [IQubit q; IBool (BLocal "a.m1")])
+  ]
+
+let x (q:InputQubit) =
+  [
+    Gate q
+    Measure ("a.m1", q)
+    Gate q
+    Measure ("a.m2", q)
+    Gate q
+    Measure ("a.m3", q)
+    GateIf (q, BLocal "a.m1")
+    GateIf (q, BBool false)
+    GateIf (q, BLocal "a.m1")
+    GateIf (q, BLocal "a.m1")
+    Subcircuit ("x", doit, [IQubit q; IArgs (ALocal "a")])
+    Subcircuit ("x1", doit2, [IQubit q; IBool (BBool false)])
+    Subcircuit ("x2", doit2, [IQubit q; IBool (BLocal "a.m1")])
+    Subcircuit ("x3", doit3, [IQubit q; IBool (BLocal "a.m1")])
+  ]
+
+
+let rec flattenOp path op =
+  let getpath name = if String.IsNullOrEmpty path then name else path + "." + name
+  match op with
+    | Measure (name, q) ->
+        [Measure (getpath name, q)]
+    | Gate q ->
+        [Gate q]
+    | GateIf (q, b) ->
+        [GateIf (q, b)]
+    | Subcircuit (name, circuitFactory, inputs) ->
+        let localize = function
+          | IQubit q ->
+            match q with
+              | QLocal path' -> box (QGlobal ^% getpath path')
+              | _ -> box q
+          | IBool b ->
+            match b with
+              | BLocal path' -> box (BGlobal ^% getpath path')
+              | _ -> box b
+          | IArgs a ->
+            match a with
+              | ALocal path' -> box (AGlobal ^% getpath path')
+              | _ -> box a
+        let oinputs = inputs |> List.map localize
+        let circuit = dynamicFunction circuitFactory oinputs :?> Operation list
+        let path = getpath name
+        circuit |> List.collect (flattenOp ^% getpath name)
+
+let flatten = List.collect ^% flattenOp null
 
 [<EntryPoint>]
 let main argv =
   let q = ref 0
-  let x = run Map.empty (circuit q)
+  let x = run Map.empty (circuit ^% QQubit q)
   printfn "%A" x
+  printfn "%A" ^% flatten (zzz ^% QQubit q)
+  printfn "%A" ^% flatten ^% flatten (zzz ^% QQubit q)
   0 // return an integer exit code
