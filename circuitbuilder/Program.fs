@@ -7,6 +7,7 @@ module Map =
   let set k f m = Map.change k (function None -> None | Some v -> Some ^% f v) m
   let singleton k v = Map.empty |> Map.add k v
 
+let getpath root name = if String.IsNullOrEmpty root then name else root + "." + name
 type Qubit = int ref
 type Args =
   | CVal of bool
@@ -68,17 +69,18 @@ type InputBool =
         | BArgs (args, path) -> (args.get localArgs).b path
         | BLocal path -> localArgs.b path
         | BGlobal path -> localArgs.b path
-        
+
+let bArgs(inputArgs, path) =
+  match inputArgs with
+    | AArgs args -> BBool (args.b path)
+    | AArgs1 (args, path) -> BArgs(inputArgs, path)
+    | ALocal root -> BLocal ^% getpath root path
+    | AGlobal root -> BGlobal ^% getpath root path
+    
 type Input =
   | IQubit of InputQubit
   | IBool of InputBool
   | IArgs of InputArgs
-  with
-    member this.get args =
-      match this with
-        | IQubit q -> box ^% QQubit ^% q.get args
-        | IBool b -> box ^% BBool ^% b.get args
-        | IArgs a -> box ^% AArgs ^% a.get args
 
 type Operation =
   | Subcircuit of name:string * circuit:obj * inputs:Input list
@@ -87,22 +89,30 @@ type Operation =
   | Measure of name:string * qubit:InputQubit
 
 
-let rec runOp args = function
-  | Measure (name, q) ->
-      let q = q.get (CObj args)
-      Map.add name (CVal (!q % 2 = 0)) args
-  | Gate q ->
-      let q = q.get (CObj args)
-      incr q
-      args
-  | GateIf (q, b) ->
-      let b = b.get (CObj args)
-      if b then runOp args (Gate q) else args
-  | Subcircuit (name, circuitFactory, inputs) ->
-      let oinputs = inputs |> List.map (fun i -> i.get (CObj args))
-      let circuit = dynamicFunction circuitFactory oinputs :?> Operation list
-      let resp = List.fold runOp Map.empty circuit
-      Map.add name (CObj resp) args
+let rec runOp args op =
+  let objargs = CObj args
+  match op with
+    | Measure (name, q) ->
+        let q = q.get objargs
+        Map.add name (CVal (!q % 2 = 0)) args
+    | Gate q ->
+        let q = q.get objargs
+        incr q
+        args
+    | GateIf (q, b) ->
+        let b = b.get objargs
+        if b then runOp args (Gate q) else args
+    | Subcircuit (name, circuitFactory, inputs) ->
+        let reify inputs =
+          let args = CObj args
+          match inputs with
+            | IQubit q -> box ^% QQubit ^% q.get args
+            | IBool b -> box ^% BBool ^% b.get args
+            | IArgs a -> box ^% AArgs ^% a.get args
+        let oinputs = List.map reify inputs
+        let circuit = dynamicFunction circuitFactory oinputs :?> Operation list
+        let resp = List.fold runOp Map.empty circuit
+        Map.add name (CObj resp) args
 
 let run = List.fold runOp
 let subsubcircuit q =
@@ -117,7 +127,7 @@ let subsubcircuit q =
 
 let doit (q:InputQubit) (c:InputArgs) =
   [
-    GateIf (q, BArgs(c, "m1"))
+    GateIf (q, bArgs(c, "m1"))
   ]
 
 // Need InputBool here because if we had just booleans
@@ -127,13 +137,6 @@ let doit (q:InputQubit) (c:InputArgs) =
 //   it would just return [GateIf q false; GateIf q false]
 //   (or whatever default value we give it)
 //   and there'd be no way to distinguish those values.
-// But this probably isn't right either. As-is, the argument
-//   can be a LocalBool. That doesn't make sense because when
-//   the unroller sees that it can't distinguish between
-//   whether that's an actual local bool definition, or 
-//   something passed in from the parent function. So it
-//   treats it as new local and adds stack to it.
-//   Need something "fixed" here.
 let doit2 (q:InputQubit) (b:InputBool) =
   [
     GateIf (q, b)
