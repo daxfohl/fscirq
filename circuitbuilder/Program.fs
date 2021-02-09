@@ -204,6 +204,10 @@ let zzz q =
   "zzz",
   [
     Subcircuit ("a", subsubcircuit q, [])
+    Subcircuit ("x", doit, [IQubit q; IArgs (ALocal "a")])
+    Subcircuit ("x1", doit2, [IQubit q; IBool (BBool false)])
+    Subcircuit ("x2", doit2, [IQubit q; IBool (BLocal "a.m1")])
+    Subcircuit ("x3", doit4, [IQubit q; IBool (BLocal "a.m1")])
   ]
 
 let x q =
@@ -242,7 +246,17 @@ let rec wasmOp (subcircuits:Map<string, string * string list>) op =
             | BGlobal path -> "C[global::" + path + "]"
         subcircuits, [], "G Q[" + qname q + "] IF " + bpart
     | Subcircuit (name, circuitFactory, inputs) ->
-        let oinputs = inputs |> List.map box
+        let localize = function
+          | IQubit q ->
+            match q with
+              | _ -> box q
+          | IBool b ->
+            match b with
+              | _ -> box b
+          | IArgs a ->
+            match a with
+              | _ -> box a
+        let oinputs = inputs |> List.map localize
         let circuit = dynamicFunction circuitFactory oinputs :?> Circuit
         let circuitname = fst circuit
         let circuits = wasmCircuit subcircuits circuit
