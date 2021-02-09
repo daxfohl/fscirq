@@ -89,7 +89,7 @@ type Operation =
   | GateIf of qubit:InputQubit * b:InputBool
   | Measure of name:string * qubit:InputQubit
 
-
+type Circuit = string * Operation list
 let rec runOp args op =
   let objargs = CObj args
   match op with
@@ -111,12 +111,13 @@ let rec runOp args op =
             | IBool b -> box ^% BBool ^% b.get args
             | IArgs a -> box ^% AArgs ^% a.get args
         let oinputs = List.map reify inputs
-        let circuit = dynamicFunction circuitFactory oinputs :?> Operation list
+        let _, circuit = dynamicFunction circuitFactory oinputs :?> Circuit
         let resp = List.fold runOp Map.empty circuit
         Map.add name (CObj resp) args
 
 let run = List.fold runOp
 let subsubcircuit q =
+  "subsubcircuit",
   [
     Gate q
     Measure ("m1", q)
@@ -127,6 +128,7 @@ let subsubcircuit q =
   ]
 
 let doit (q:InputQubit) (c:InputArgs) =
+  "doit",
   [
     GateIf (q, InputBool.fromArgs(c, "m1"))
   ]
@@ -139,21 +141,25 @@ let doit (q:InputQubit) (c:InputArgs) =
 //   (or whatever default value we give it)
 //   and there'd be no way to distinguish those values.
 let doit2 (q:InputQubit) (b:InputBool) =
+  "doit2",
   [
     GateIf (q, b)
   ]
 
 let doit3 (q:InputQubit) (b:InputBool) =
+  "doit3",
   [
     Subcircuit ("z3", doit2, [IQubit q; IBool b])
   ]
 
 let doit4 (q:InputQubit) (b:InputBool) =
+  "doit4",
   [
     Subcircuit ("z4", doit3, [IQubit q; IBool b])
   ]
 
 let subcircuit (q:InputQubit) =
+  "subcircuit",
   [
     Subcircuit ("a", subsubcircuit, [IQubit q])
     Subcircuit ("b", subsubcircuit, [IQubit q])
@@ -162,6 +168,7 @@ let subcircuit (q:InputQubit) =
   ]
 
 let circuit (q:InputQubit) =
+  "circuit",
   [
     Subcircuit ("a", subcircuit, [IQubit q])
     Subcircuit ("b", subcircuit, [IQubit q])
@@ -170,6 +177,7 @@ let circuit (q:InputQubit) =
   ]
   
 let zzz (q:InputQubit) =
+  "zzz",
   [
     Subcircuit ("a", subsubcircuit q, [])
     Subcircuit ("x", doit, [IQubit q; IArgs (ALocal "a")])
@@ -179,6 +187,7 @@ let zzz (q:InputQubit) =
   ]
 
 let x (q:InputQubit) =
+  "x",
   [
     Gate q
     Measure ("a.m1", q)
@@ -221,17 +230,16 @@ let rec flattenOp path op =
               | ALocal path' -> box (AGlobal ^% getpath path')
               | _ -> box a
         let oinputs = inputs |> List.map localize
-        let circuit = dynamicFunction circuitFactory oinputs :?> Operation list
-        let path = getpath name
-        circuit |> List.collect (flattenOp ^% getpath name)
+        let _, circuit = dynamicFunction circuitFactory oinputs :?> Circuit
+        circuit |> List.collect ^% flattenOp ^% getpath name
 
 let flatten = List.collect ^% flattenOp null
 
 [<EntryPoint>]
 let main argv =
   let q = ref 0
-  let x = run Map.empty (circuit ^% QQubit q)
+  let x = run Map.empty ^% snd ^% circuit ^% QQubit q
   printfn "%A" x
-  printfn "%A" ^% flatten (zzz ^% QQubit q)
-  printfn "%A" ^% flatten ^% flatten (zzz ^% QQubit q)
+  printfn "%A" ^% flatten ^% snd ^% zzz ^% QQubit q
+  printfn "%A" ^% flatten ^% flatten ^% snd ^% zzz ^% QQubit q
   0 // return an integer exit code
