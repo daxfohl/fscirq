@@ -231,7 +231,7 @@ let x q =
 
   
   
-let rec wasmOp (subcircuits:Map<string, string * string list>) op =
+let rec wasmOp (subcircuits) op =
   let qname (q:InputQubit) = "qubit"//(q.get qargs).name
   match op with
     | Measure (name, q) ->
@@ -247,15 +247,9 @@ let rec wasmOp (subcircuits:Map<string, string * string list>) op =
         subcircuits, [], "G Q[" + qname q + "] IF " + bpart
     | Subcircuit (name, circuitFactory, inputs) ->
         let localize = function
-          | IQubit q ->
-            match q with
-              | _ -> box q
-          | IBool b ->
-            match b with
-              | _ -> box b
-          | IArgs a ->
-            match a with
-              | _ -> box a
+          | IQubit _ -> box ^% QQubit { value = ref 0; name = "" }
+          | IBool b -> box ^% BBool false
+          | IArgs a -> box ^% AArgs ^% CVal false
         let oinputs = inputs |> List.map localize
         let circuit = dynamicFunction circuitFactory oinputs :?> Circuit
         let circuitname = fst circuit
@@ -276,4 +270,5 @@ let main argv =
   printfn "%A" x
   printfn "%A" ^% flatten ^% snd ^% zzz ^% QQubit q
   printfn "%A" ^% wasmCircuit Map.empty ^% zzz ^% QQubit q
+  printfn "%A" ^% obj.ReferenceEquals((BBool false) , (BBool false))
   0
