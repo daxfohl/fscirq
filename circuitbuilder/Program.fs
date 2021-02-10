@@ -209,25 +209,6 @@ let zzz q =
     Subcircuit ("x3", doit4, [IQubit q; IBool (BLocal "a.m1")])
   ]
 
-let x q =
-  "x",
-  [
-    Gate q
-    Measure ("a.m1", q)
-    Gate q
-    Measure ("a.m2", q)
-    Gate q
-    Measure ("a.m3", q)
-    GateIf (q, BLocal "a.m1")
-    GateIf (q, BBool false)
-    GateIf (q, BLocal "a.m1")
-    GateIf (q, BLocal "a.m1")
-    Subcircuit ("x", doit, [IQubit q; IArgs (ALocal "a")])
-    Subcircuit ("x1", doit2, [IQubit q; IBool (BBool false)])
-    Subcircuit ("x2", doit2, [IQubit q; IBool (BLocal "a.m1")])
-    Subcircuit ("x3", doit3, [IQubit q; IBool (BLocal "a.m1")])
-  ]
-
 
 let rec wasmOp (subcircuits: Map<string, string * string list>, inputs:obj list) op =
   let argname a = sprintf "ARG_%d" (inputs |> List.findIndex ^% fun a' -> obj.ReferenceEquals(a, a'))
@@ -270,6 +251,6 @@ let main argv =
   let x = run Map.empty ^% snd ^% circuit ^% QQubit q
   printfn "%A" x
   printfn "%A" ^% flatten ^% snd ^% zzz ^% QQubit q
-  printfn "%A" ^% wasmCircuit (Map.empty, []) ^% zzz ^% QQubit q
+  printfn "%A" ^% wasmCircuit (Map.empty, [QQubit q]) ^% circuit ^% QQubit q
   printfn "%A" ^% obj.ReferenceEquals((BBool false) , (BBool false))
   0
