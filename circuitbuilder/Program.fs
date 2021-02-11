@@ -177,11 +177,17 @@ let doit3 q b =
   [
     Subcircuit ("z3", doit2, [IQubit ^% QParam q; IBool ^% BParam b])
   ]
-
+  
 let doit4 q b =
   "doit4",
   [
     Subcircuit ("z4", doit3, [IQubit ^% QParam q; IBool ^% BParam b])
+  ]
+    
+let doit5 q =
+  "doit5",
+  [
+    Subcircuit ("z5", doit4, [IQubit ^% QParam q; IBool ^% BBool false])
   ]
 
 let subcircuit q =
@@ -192,6 +198,8 @@ let subcircuit q =
     Subcircuit ("c", subsubcircuit, [IQubit ^% QParam q])
     //Subcircuit ("x", doit, [IQubit ^% QParam q; IArgs (ALocal "b")])
     Subcircuit ("y", doit2, [IQubit ^% QParam q; IBool (BLocal "b.m1")])
+    Subcircuit ("z", doit2, [IQubit ^% QParam q; IBool (BBool false)])
+    Subcircuit ("z2", doit2, [IQubit ^% QParam q; IBool (BBool true)])
   ]
 
 let circuit q =
@@ -211,6 +219,7 @@ let zzz q =
     Subcircuit ("x1", doit2, [IQubit ^% QParam q; IBool (BBool false)])
     Subcircuit ("x2", doit2, [IQubit ^% QParam q; IBool (BLocal "a.m1")])
     Subcircuit ("x3", doit4, [IQubit ^% QParam q; IBool (BLocal "a.m1")])
+    Subcircuit ("x3", doit5, [IQubit ^% QParam q])
   ]
   
   
@@ -224,8 +233,12 @@ type Register =
   member this.name() =
     match this with
     | ROutput name -> name
-    | RBool (_, name) -> name
+    | RBool (bp, name) ->
+      match bp with
+      | BPConst b -> b.ToString()
+      | BPGlobal path -> name
     | RQubit (_, name) -> name
+let getargname (r:Register) = r.name()
 type Registers = Register list
 type OperationDef = QasmLine * Registers
 type CircuitDef = QasmLines * Registers
@@ -256,7 +269,14 @@ let rec wasmOp (state:WasmState) (op:Operation): OperationDef * WasmState =
   | Subcircuit (name, circuitFactory, inputs) ->
     let localize = function
     | IQubit _ -> box ^% QPConst ^% ref 0
-    | IBool _ -> box ^% BPConst false
+    | IBool ib ->
+      box ^%
+      match ib with
+      | BBool b -> BPConst b
+      | BLocal path -> BPGlobal ""
+      | BParam bparam -> BPGlobal ""
+      | _ -> failwith "Not a value"
+
     | IArgs _ -> box ^% APConst ^% CVal false
     let oinputs = inputs |> List.map localize
     let circuit = dynamicFunction circuitFactory oinputs :?> Circuit
@@ -266,9 +286,9 @@ let rec wasmOp (state:WasmState) (op:Operation): OperationDef * WasmState =
     let getarg = function
     | ROutput n -> ROutput (name + "." + n)
     | RBool (p, _) -> RBool (p, sprintf "B%d" ^% getindex p bparams)
-    | RQubit (p, _) -> RQubit (p, sprintf "Q%d" ^% getindex p bparams)
+    | RQubit (p, _) -> RQubit (p, sprintf "Q%d" ^% getindex p qparams)
     let args = List.map getarg registers
-    let str = "CALL " + circuitname + " " + String.Join(' ', args |> List.map (fun arg -> arg.name()))
+    let str = "CALL " + circuitname + " " + String.Join(' ', args |> List.map getargname)
     (str, args), ([], [], circuits)
 and wasmCircuit (subcircuits:CircuitDefMap) (circuit:Circuit): CircuitDefMap =
   let name, ops = circuit
@@ -284,21 +304,12 @@ let main argv =
   printfn "%A" q
   printfn "%A" ^% flatten ^% snd ^% zzz (QPConst q)
   let wasm = wasmCircuit Map.empty ^% subcircuit ^% QPConst q
-  printfn ""
-  printfn "subcircuit"
-  let output, args = wasm.["subcircuit"]
-  printfn "%s" (String.Join('\n', output))
-  printfn "%A" args
-  printfn ""
-  printfn "subsubcircuit"
-  let output, args = wasm.["subsubcircuit"]
-  printfn "%s" (String.Join('\n', output))
-  printfn "%A" args
-  printfn ""
-  printfn "doit2"
-  let output, args = wasm.["doit2"]
-  printfn "%s" (String.Join('\n', output))
-  printfn "%A" args
+  for x in wasm do
+    let name, (output, args) = x.Deconstruct()
+    printfn ""
+    printfn "%s" name
+    printfn "%s" (String.Join('\n', output))
+    printfn "%A" ^% List.map id args
   let expectedargs =
     [ 
       "Q0";
