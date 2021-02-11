@@ -90,52 +90,6 @@ type Operation =
 
 type Circuit = string * Operation list
 
-
-type QasmLine = string
-type QasmLines = QasmLine list
-type Register = string
-type Registers = Register list
-type OperationDef = QasmLine * Registers
-type CircuitDef = QasmLines * Registers
-type CircuitName = string
-type CircuitDefMap = Map<CircuitName, CircuitDef>
-let rec wasmOp inputs (subcircuits:CircuitDefMap) (op:Operation): OperationDef * CircuitDefMap =
-  let argname a = sprintf "ARG_%d" (inputs |> List.findIndex ^% fun a' -> obj.ReferenceEquals(a, a'))
-  match op with
-  | Measure (name, q) ->
-    ("M C[" + name + "] <- Q[" + argname q + "]", [name; argname q]), subcircuits
-  | Gate q ->
-    ("G Q[" + argname q + "]", [argname q]), subcircuits
-  | GateIf (q, b) ->
-    let bpart, bargs =
-      match b with
-      | BBool b -> b.ToString(), []
-      | BLocal path -> "C_" + path, []
-      | BParam bparam -> bparam.get()
-      | BArgsParam (APConst args, path) -> args.b path
-      | BArgs (args, path) -> 
-        let bname = argname args + path
-        "C[" + bname + "]", [bname]
-    ("G Q[" + argname q + "] IF " + bpart, (argname q)::bargs), subcircuits
-  | Subcircuit (name, circuitFactory, inputs) ->
-    let localize = function
-    | IQubit _ -> box ^% QQubit ^% ref 0
-    | IBool _ -> box ^% BBool false
-    | IArgs _ -> box ^% AArgs ^% CVal false
-    let oinputs = inputs |> List.map localize
-    let circuit = dynamicFunction circuitFactory oinputs :?> Circuit
-    let circuitname = fst circuit
-    let circuits = wasmCircuit subcircuits circuit
-    let args = Map.find circuitname circuits |> snd |> List.map ^% fun p -> name + "." + p
-    let str = "CALL " + circuitname + " " + String.Join(' ', args)
-    (str, args), circuits
-and wasmCircuit (subcircuits:CircuitDefMap) (circuit:Circuit): CircuitDefMap =
-  let name, ops = circuit
-  let folder = wasmOp []
-  let output, subcircuits = List.mapFold folder subcircuits ops
-  subcircuits |> Map.add name (List.map fst output, List.collect snd output |> List.distinct)
-
-
 let rec runOp args op =
   let objargs = CObj args
   match op with
@@ -236,7 +190,8 @@ let subcircuit q =
     Subcircuit ("a", subsubcircuit, [IQubit ^% QParam q])
     Subcircuit ("b", subsubcircuit, [IQubit ^% QParam q])
     Subcircuit ("c", subsubcircuit, [IQubit ^% QParam q])
-    Subcircuit ("x", doit, [IQubit ^% QParam q; IArgs (ALocal "b")])
+    //Subcircuit ("x", doit, [IQubit ^% QParam q; IArgs (ALocal "b")])
+    Subcircuit ("y", doit2, [IQubit ^% QParam q; IBool (BLocal "b.m1")])
   ]
 
 let circuit q =
@@ -257,7 +212,59 @@ let zzz q =
     Subcircuit ("x2", doit2, [IQubit ^% QParam q; IBool (BLocal "a.m1")])
     Subcircuit ("x3", doit4, [IQubit ^% QParam q; IBool (BLocal "a.m1")])
   ]
-
+  
+  
+type QasmLine = string
+type QasmLines = QasmLine list
+type Register = string
+type Registers = Register list
+type OperationDef = QasmLine * Registers
+type CircuitDef = QasmLines * Registers
+type CircuitName = string
+type CircuitDefMap = Map<CircuitName, CircuitDef>
+let rec wasmOp (qparams: QubitParam list, bparams: BoolParam list) (subcircuits:CircuitDefMap) (op:Operation): OperationDef * CircuitDefMap =
+  let qname = function
+  | QParam a ->
+    sprintf "Q%d" ^%
+      match qparams |> List.tryFindIndex ^% fun a' -> a = a' with
+      | Some i -> i
+      | None -> qparams.Length
+  match op with
+  | Measure (name, q) -> ("M " + name + " <- " + qname q, [name; qname q]), subcircuits
+  | Gate q -> ("G " + qname q, [qname q]), subcircuits
+  | GateIf (q, b) ->
+    let bpart, bargs =
+      match b with
+      | BBool b -> b.ToString(), []
+      | BLocal path -> path, [path]
+      | BParam a ->
+        let id = 
+          match bparams |> List.tryFindIndex ^% fun a' -> a = a' with
+          | Some i -> i
+          | None -> qparams.Length
+        let name = sprintf "B%d" id
+        name, [name]
+      | BArgsParam (APConst args, path) -> failwith "not yet"
+    ("G " + qname q + " IF " + bpart, (qname q)::bargs), subcircuits
+  | Subcircuit (name, circuitFactory, inputs) ->
+    let localize = function
+    | IQubit _ -> box ^% QPConst ^% ref 0
+    | IBool _ -> box ^% BPConst false
+    | IArgs _ -> box ^% APConst ^% CVal false
+    let oinputs = inputs |> List.map localize
+    let circuit = dynamicFunction circuitFactory oinputs :?> Circuit
+    let circuitname = fst circuit
+    let circuits = wasmCircuit subcircuits circuit
+    let args = Map.find circuitname circuits |> snd |> List.map ^% fun p -> name + "." + p
+    let str = "CALL " + circuitname + " " + String.Join(' ', args)
+    (str, args), circuits
+and wasmCircuit (subcircuits:CircuitDefMap) (circuit:Circuit): CircuitDefMap =
+  let name, ops = circuit
+  let folder = wasmOp ([], [])
+  let output, subcircuits = List.mapFold folder subcircuits ops
+  subcircuits |> Map.add name (List.map fst output, List.collect snd output |> List.distinct)
+  
+  
 [<EntryPoint>]
 let main argv =
   let q = ref 0
@@ -265,9 +272,15 @@ let main argv =
   printfn "%A" x
   printfn "%A" q
   printfn "%A" ^% flatten ^% snd ^% zzz (QPConst q)
-  let wasm = wasmCircuit Map.empty ^% circuit ^% QPConst q
-  let output, args = wasm.["circuit"]
-  printfn "%A" output
+  let wasm = wasmCircuit Map.empty ^% subcircuit ^% QPConst q
+  let output, args = wasm.["subcircuit"]
+  printfn "%s" (String.Join('\n', output))
+  printfn "%A" args
+  let output, args = wasm.["subsubcircuit"]
+  printfn "%s" (String.Join('\n', output))
+  printfn "%A" args
+  let output, args = wasm.["doit2"]
+  printfn "%s" (String.Join('\n', output))
   printfn "%A" args
   let expectedargs =
     [ 
