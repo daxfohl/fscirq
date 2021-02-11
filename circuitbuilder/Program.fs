@@ -216,36 +216,43 @@ let zzz q =
   
 type QasmLine = string
 type QasmLines = QasmLine list
-type Register = string
+type Register =
+| ROutput of string
+| RBool of BoolParam * string
+| RQubit of QubitParam * string
+  with
+  member this.name() =
+    match this with
+    | ROutput name -> name
+    | RBool (_, name) -> name
+    | RQubit (_, name) -> name
 type Registers = Register list
 type OperationDef = QasmLine * Registers
 type CircuitDef = QasmLines * Registers
 type CircuitName = string
 type CircuitDefMap = Map<CircuitName, CircuitDef>
-let rec wasmOp (qparams: QubitParam list, bparams: BoolParam list) (subcircuits:CircuitDefMap) (op:Operation): OperationDef * CircuitDefMap =
+type WasmState = QubitParam list * BoolParam list * CircuitDefMap
+let rec wasmOp (state:WasmState) (op:Operation): OperationDef * WasmState =
+  let qparams, bparams, subcircuits = state
+  let getindex a list = 
+    match list |> List.tryFindIndex ^% fun a' -> obj.ReferenceEquals(a, a') with
+    | Some i -> i
+    | None -> list.Length
   let qname = function
-  | QParam a ->
-    sprintf "Q%d" ^%
-      match qparams |> List.tryFindIndex ^% fun a' -> a = a' with
-      | Some i -> i
-      | None -> qparams.Length
+  | QParam a -> sprintf "Q%d" ^% getindex a qparams
+  let qof = function | QParam a -> a
+  let qlist q = [qof q]
   match op with
-  | Measure (name, q) -> ("M " + name + " <- " + qname q, [name; qname q]), subcircuits
-  | Gate q -> ("G " + qname q, [qname q]), subcircuits
+  | Measure (name, q) -> ("M " + name + " <- " + qname q, [ROutput name; RQubit (qof q, qname q)]), (qlist q, [], subcircuits)
+  | Gate q -> ("G " + qname q, [RQubit(qof q, qname q)]), (qlist q, [], subcircuits)
   | GateIf (q, b) ->
-    let bpart, bargs =
+    let bpart, bregs, bparams =
       match b with
-      | BBool b -> b.ToString(), []
-      | BLocal path -> path, [path]
-      | BParam a ->
-        let id = 
-          match bparams |> List.tryFindIndex ^% fun a' -> a = a' with
-          | Some i -> i
-          | None -> qparams.Length
-        let name = sprintf "B%d" id
-        name, [name]
+      | BBool b -> b.ToString(), [], []
+      | BLocal path -> path, [ROutput path], []
+      | BParam a -> let name = sprintf "B%d" ^% getindex a bparams in name, [RBool (a, name)], [a]
       | BArgsParam (APConst args, path) -> failwith "not yet"
-    ("G " + qname q + " IF " + bpart, (qname q)::bargs), subcircuits
+    ("G " + qname q + " IF " + bpart, (RQubit(qof q, qname q))::bregs), (qlist q, bparams, subcircuits)
   | Subcircuit (name, circuitFactory, inputs) ->
     let localize = function
     | IQubit _ -> box ^% QPConst ^% ref 0
@@ -255,13 +262,17 @@ let rec wasmOp (qparams: QubitParam list, bparams: BoolParam list) (subcircuits:
     let circuit = dynamicFunction circuitFactory oinputs :?> Circuit
     let circuitname = fst circuit
     let circuits = wasmCircuit subcircuits circuit
-    let args = Map.find circuitname circuits |> snd |> List.map ^% fun p -> name + "." + p
-    let str = "CALL " + circuitname + " " + String.Join(' ', args)
-    (str, args), circuits
+    let registers = Map.find circuitname circuits |> snd
+    let getarg = function
+    | ROutput n -> ROutput (name + "." + n)
+    | RBool (p, _) -> RBool (p, sprintf "B%d" ^% getindex p bparams)
+    | RQubit (p, _) -> RQubit (p, sprintf "Q%d" ^% getindex p bparams)
+    let args = List.map getarg registers
+    let str = "CALL " + circuitname + " " + String.Join(' ', args |> List.map (fun arg -> arg.name()))
+    (str, args), ([], [], circuits)
 and wasmCircuit (subcircuits:CircuitDefMap) (circuit:Circuit): CircuitDefMap =
   let name, ops = circuit
-  let folder = wasmOp ([], [])
-  let output, subcircuits = List.mapFold folder subcircuits ops
+  let output, (_, _, subcircuits) = List.mapFold wasmOp ([], [], subcircuits) ops
   subcircuits |> Map.add name (List.map fst output, List.collect snd output |> List.distinct)
   
   
@@ -273,12 +284,18 @@ let main argv =
   printfn "%A" q
   printfn "%A" ^% flatten ^% snd ^% zzz (QPConst q)
   let wasm = wasmCircuit Map.empty ^% subcircuit ^% QPConst q
+  printfn ""
+  printfn "subcircuit"
   let output, args = wasm.["subcircuit"]
   printfn "%s" (String.Join('\n', output))
   printfn "%A" args
+  printfn ""
+  printfn "subsubcircuit"
   let output, args = wasm.["subsubcircuit"]
   printfn "%s" (String.Join('\n', output))
   printfn "%A" args
+  printfn ""
+  printfn "doit2"
   let output, args = wasm.["doit2"]
   printfn "%s" (String.Join('\n', output))
   printfn "%A" args
