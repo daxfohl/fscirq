@@ -7,7 +7,11 @@ module Map =
   let set k f m = Map.change k (function None -> None | Some v -> Some ^% f v) m
   let singleton k v = Map.empty |> Map.add k v
 
-let getpath root name = if String.IsNullOrEmpty root then name else root + "." + name
+let getpath root name = 
+  if String.IsNullOrEmpty root then name
+  elif String.IsNullOrEmpty name then root
+  else root + "." + name
+
 type Qubit = int ref
 type Args =
 | CVal of bool
@@ -27,16 +31,14 @@ type Args =
     | _ -> failwith "Not a cval"
 
 type ArgsParam =
-| ArgsParam of Guid
-let newArgsParam() = ArgsParam(Guid.NewGuid())
+| ArgsParam of int
 
 type InputArgs =
 | ALocal of string
 | AArgsParam of ArgsParam * string
 
 type BoolParam =
-| BoolParam of Guid
-let newBoolParam() = BoolParam(Guid.NewGuid())
+| BoolParam of int
 
 type InputBool =
 | BBool of bool
@@ -45,8 +47,7 @@ type InputBool =
 | BArgsParam of ArgsParam * string
 
 type QubitParam =
-| QubitParam of Guid
-let newQubitParam() = QubitParam(Guid.NewGuid())
+| QubitParam of int
 
 type InputQubit =
 | QQubit of Qubit
@@ -61,6 +62,23 @@ type Param =
 | PQubit of QubitParam
 | PBool of BoolParam
 | PArg of ArgsParam
+let toparam = function
+| PQubit x -> box x
+| PBool x -> box x
+| PArg x -> box x
+
+let argsparamcounter = ref 0
+let newArgsParam() = 
+  incr argsparamcounter
+  PArg ^% ArgsParam(!argsparamcounter)
+let boolparamcounter = ref 0
+let newBoolParam() = 
+  incr boolparamcounter
+  PBool ^% BoolParam(!boolparamcounter)
+let qubitparamcounter = ref 0
+let newQubitParam() = 
+  incr qubitparamcounter
+  PQubit ^% QubitParam(!qubitparamcounter)
 
 type Operation =
 | Subcircuit of name:string * circuit:obj * inputs:Input list
@@ -101,14 +119,10 @@ let rec runOp paramvals localvalues op =
     if b then runOp paramvals localvalues (Gate q) else localvalues
   | Subcircuit (name, circuitFactory, inputs) ->
     let reify = function
-    | IQubit q -> PQubit ^% newQubitParam(), VQubit (qval q)
-    | IBool b -> PBool ^% newBoolParam(), VBool (bval b)
-    | IArgs a -> PArg ^% newArgsParam(), VArg (aval a)
+    | IQubit q -> newQubitParam(), VQubit (qval q)
+    | IBool b -> newBoolParam(), VBool (bval b)
+    | IArgs a -> newArgsParam(), VArg (aval a)
     let oinputs = List.map reify inputs
-    let toparam = function
-    | PQubit x -> box x
-    | PBool x -> box x
-    | PArg x -> box x
     let inputparams = oinputs |> List.map fst |> List.map toparam
     let _, circuit = dynamicFunction circuitFactory inputparams :?> Circuit
     let parameters = oinputs |> Map.ofList
@@ -116,36 +130,63 @@ let rec runOp paramvals localvalues op =
     Map.add name (CObj resp) localvalues
 let run parameters = List.fold (runOp parameters) Map.empty
 
+type ParamVal =
+| PVPath of string
+| PVValue of Value
+let rec flattenOp (paramPaths: Map<Param, ParamVal>) path op =
+  let fullpath = getpath path
+  match op with
+  | Measure (name, q) -> [Measure (fullpath name, q)]
+  | Gate q -> [Gate q]
+  | GateIf (q, b) -> [GateIf (q, b)]
+  | Subcircuit (name, circuitFactory, inputs) ->
+    let localize = function
+    | IQubit q ->
+      match q with
+      | QQubit q -> newQubitParam(), PVValue ^% VQubit q
+      | QParam p -> PQubit p, paramPaths |> Map.find ^% PQubit p
+    | IBool b ->
+      match b with
+      | BBool b -> newBoolParam(), PVValue ^% VBool b
+      | BLocal path' -> newBoolParam(), PVPath ^% fullpath path'
+      | BParam p -> PBool p, paramPaths |> Map.find ^% PBool p
+      | BArgsParam (p, path') ->
+        (PArg p,
+          match paramPaths |> Map.find ^% PArg p with
+            | PVPath x -> PVPath ^% getpath x path'
+            | PVValue v -> PVValue v)
+    | IArgs a ->
+      match a with
+      | ALocal path' -> newArgsParam(), PVPath ^% fullpath path'
+      | AArgsParam (p, path') -> 
+        (PArg p,
+          match paramPaths |> Map.find ^% PArg p with
+            | PVPath x -> PVPath ^% getpath x path'
+            | PVValue v -> PVValue v)
+    let oinputs = inputs |> List.map localize
+    let inputparams = oinputs |> List.map fst |> List.map toparam
+    let _, circuit = dynamicFunction circuitFactory inputparams :?> Circuit
+    let parameters = oinputs |> Map.ofList
+    let simplifyB = function
+    | BBool b -> BBool b
+    | BLocal path' -> BLocal path'
+    | BParam p -> 
+      match oinputs |> List.find (fun (p', _) -> p' = PBool p) |> snd with
+      | PVPath p -> BLocal p
+      | PVValue (VBool b) -> BBool b
+    | BArgsParam (p, path') -> 
+      match oinputs |> List.find (fun (p', _) -> p' = PArg p) |> snd with
+      | PVPath p -> BLocal (getpath p path')
+      | PVValue (VBool b) -> BBool b
 
-//let rec flattenOp path op =
-//  let rootpath = getpath path
-//  match op with
-//  | Measure (name, q) -> [Measure (rootpath name, q)]
-//  | Gate q -> [Gate q]
-//  | GateIf (q, b) -> [GateIf (q, b)]
-//  | Subcircuit (name, circuitFactory, inputs) ->
-//    let localize = function
-//    | IQubit q ->
-//      box ^%
-//      match q with
-//      | QParam p -> p
-//    | IBool b ->
-//      box ^%
-//      match b with
-//      | BBool c -> BPConst c
-//      | BLocal path' -> BPGlobal ^% rootpath path'
-//      | BParam p -> p
-//      | BArgsParam (APGlobal path, path') -> BPGlobal ^% getpath path path'
-//    | IArgs a ->
-//      box ^%
-//      match a with
-//      | ALocal path' -> APGlobal ^% rootpath path'
-//      | AArgsParam (APGlobal path, path') -> APGlobal ^% getpath path path'
-//      | _ -> failwith "Not a value"
-//    let oinputs = inputs |> List.map localize
-//    let _, circuit = dynamicFunction circuitFactory oinputs :?> Circuit
-//    circuit |> List.collect ^% flattenOp ^% rootpath name
-//let flatten = List.collect ^% flattenOp null
+    let simplify op =
+      match op with
+      | GateIf (q, b) -> GateIf (q, simplifyB b)
+      | Measure (name, q) -> Measure (name, q)
+      | Gate q -> Gate q
+      | Subcircuit (name, circuitFactory, inputs) -> Subcircuit (name, circuitFactory, inputs)
+    circuit |> List.map simplify |> List.collect ^% (flattenOp parameters) ^% fullpath name
+let flatten parameters = List.collect ^% (flattenOp parameters) null
 
 
 
@@ -222,7 +263,6 @@ let zzz q =
     Subcircuit ("x3", doit5, [IQubit ^% QParam q])
   ]
   
-  
 type QasmLine = string
 //type QasmLines = QasmLine list
 //type Register =
@@ -296,14 +336,73 @@ type QasmLine = string
 //  subcircuits |> Map.add name (List.map fst output, List.collect snd output |> List.distinct)
   
   
+let doit0 q =
+  "doit0",
+  [
+    Measure ("m1", QParam q)
+    GateIf (QParam q, BLocal "m1")
+  ]
+  
+let doit00 q b =
+  "doit00",
+  [
+    GateIf (QParam q, BParam b)
+  ]
+  
+  
+let xxx q =
+  "xxx",
+  [
+    Measure ("m1", QParam q)
+    Subcircuit ("x3", doit00, [IQubit ^% QParam q; IBool ^% BLocal "m1"])
+  ]
+
+  
+let doit000 q a =
+  "doit000",
+  [
+    GateIf (QParam q, BArgsParam(a, "m1"))
+  ]
+  
+let xxx0 q =
+  "xxx0",
+  [
+    Measure ("m1", QParam q)
+    Subcircuit ("x3", doit000, [IQubit ^% QParam q; IArgs ^% ALocal ""])
+  ]
+
+
+let doit0000 q a =
+  "doit0000",
+  [
+    GateIf (QParam q, BArgsParam(a, ""))
+  ]
+
+let xxx00 q =
+  "xxx00",
+  [
+    Measure ("m1", QParam q)
+    Subcircuit ("x3", doit0000, [IQubit ^% QParam q; IArgs ^% ALocal "m1"])
+  ]
+
 [<EntryPoint>]
 let main argv =
-  let q = ref 0
-  let qubitparam = newQubitParam()
-  let x = run (Map.singleton (PQubit qubitparam) (VQubit q)) [Subcircuit(null, circuit, [IQubit (QQubit q)])]
-  printfn "%A" x
-  printfn "%A" q
-  //printfn "%A" ^% flatten ^% snd ^% zzz (QPConst q)
+  //let q = ref 0
+  //let qubitparam = newQubitParam()
+  //let x = run (Map.singleton qubitparam (VQubit q)) [Subcircuit("ASDFASGADGFSDFGSD", circuit, [IQubit (QQubit q)])]
+  //printfn "%A" x
+  //printfn "%A" q
+  let decompose sc =
+    let xs = flatten (Map.singleton (PQubit (QubitParam 0)) (PVPath "BBBBBBBBBBBB")) [Subcircuit(null, sc, [IQubit (QParam (QubitParam 0))])]
+    for x in xs do
+      printfn "%A" x
+    printfn ""
+    
+  decompose doit0
+  decompose xxx
+  decompose xxx0
+  decompose xxx00
+  decompose zzz
   //let wasm = wasmCircuit Map.empty ^% subcircuit ^% QPConst q
   //for x in wasm do
   //  let name, (output, args) = x.Deconstruct()
