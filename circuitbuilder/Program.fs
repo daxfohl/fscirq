@@ -323,8 +323,8 @@ let rec wasmOp (state:WasmState) (op:Operation): OperationDef * WasmState =
     let subbparams = oinputs |> List.choose(fun p -> match p with | PBool b -> Some b | _ -> None)
     let circuits = wasmCircuit (subqparams, subbparams, subcircuits) circuit
     let registers = Map.find circuitname circuits |> snd
-    let qargs = subqparams |> List.map(fun p -> RQubit(sprintf "Q%d" ^% getindex p qparams))
-    let bargs = subbparams |> List.map(fun p -> RBool(sprintf "Q%d" ^% getindex p bparams))
+    let qargs = subqparams |> List.map(fun p -> RQubit(sprintf "Q%d" ^% getindex p subqparams))
+    let bargs = subbparams |> List.map(fun p -> RBool(sprintf "B%d" ^% getindex p subbparams))
     let rargs = registers |> List.choose(fun r -> match r with | ROutput n -> Some(ROutput(getpath name n)) | _ -> None)
     let args = List.concat [qargs;bargs;rargs]
     let str = "CALL " + circuitname + " " + String.Join(' ', args |> List.map getargname)
@@ -335,12 +335,11 @@ and wasmCircuit (state:WasmState) (circuit:Circuit): CircuitDefMap =
   subcircuits |> Map.add name (List.map fst output, List.concat [List.mapi (fun i _ -> RQubit (sprintf "Q%d" i)) qparams; List.mapi (fun i _ -> RBool (sprintf "B%d" i)) bparams;  List.collect snd output] |> List.distinct)
   
   
-let doit0 q0 q1 =
+let doit0 q0 b =
   "doit0",
   [
-    Measure ("m1", QParam q1)
     Measure ("m0", QParam q0)
-    GateIf (QParam q0, BLocal "m1")
+    GateIf (QParam q0, BParam b)
   ]
   
 let doit00 q b =
@@ -354,7 +353,7 @@ let xxx q =
   "xxx",
   [
     Measure ("m1", QParam q)
-    Subcircuit ("x3", doit00, [IQubit ^% QParam q; IBool ^% BLocal "m1"])
+    Subcircuit ("x3", doit0, [IQubit ^% QParam q; IBool ^% BLocal "m1"])
   ]
 
   
@@ -403,7 +402,7 @@ let main argv =
   //decompose xxx0
   //decompose xxx00
   //decompose zzz
-  let wasm = wasmCircuit ([QubitParam 0; QubitParam 1], [], Map.empty) ("adsf", [Subcircuit("x", doit0, [IQubit (QParam (QubitParam 0));IQubit (QParam (QubitParam 1))])])
+  let wasm = wasmCircuit ([QubitParam 0], [], Map.empty) ("adsf", [Subcircuit("x", xxx, [IQubit (QParam (QubitParam 0))])])
   for x in wasm do
     let name, (output, args) = x.Deconstruct()
     printfn ""
